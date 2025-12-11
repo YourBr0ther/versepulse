@@ -26,11 +26,15 @@ class PatchPost:
 def scrape_forum_threads() -> list[PatchPost]:
     """Scrape the Spectrum forum for patch note threads."""
     posts = []
+    seen_ids = set()
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+            locale="en-US",
+            timezone_id="America/New_York"
         )
         page = context.new_page()
 
@@ -39,74 +43,45 @@ def scrape_forum_threads() -> list[PatchPost]:
             page.goto(FORUM_URL, wait_until="networkidle", timeout=60000)
 
             # Wait for forum threads to load
-            page.wait_for_selector(".forum-thread-item, .thread-subject, [class*='thread']", timeout=30000)
+            page.wait_for_selector("a[href*='/thread/']", timeout=30000)
 
             # Give extra time for dynamic content
             page.wait_for_timeout(3000)
 
-            # Try multiple selector patterns for thread items
-            thread_selectors = [
-                ".forum-thread-item",
-                "[class*='thread-item']",
-                "[class*='ThreadItem']",
-                ".thread-row",
-                "a[href*='/thread/']"
-            ]
+            # Find all thread links
+            links = page.query_selector_all("a[href*='/forum/190048/thread/']")
+            logger.info(f"Found {len(links)} thread links")
 
-            threads = []
-            for selector in thread_selectors:
-                threads = page.query_selector_all(selector)
-                if threads:
-                    logger.info(f"Found {len(threads)} threads using selector: {selector}")
-                    break
+            for link in links:
+                href = link.get_attribute("href")
+                title = link.inner_text().strip()
 
-            if not threads:
-                # Fallback: find all links containing /thread/
-                links = page.query_selector_all("a[href*='/forum/190048/thread/']")
-                logger.info(f"Fallback: found {len(links)} thread links")
+                # Skip empty titles or non-thread links
+                if not href or not title or len(title) < 5:
+                    continue
 
-                for link in links[:10]:  # Limit to first 10
-                    href = link.get_attribute("href")
-                    title = link.inner_text().strip()
+                # Extract thread slug from URL (e.g., "star-citizen-alpha-4-5-ptu-patch-notes-7")
+                # URL format: /spectrum/community/SC/forum/190048/thread/SLUG
+                match = re.search(r'/thread/([^/]+?)(?:/\d+)?$', href)
+                if match:
+                    post_slug = match.group(1)
 
-                    if href and title:
-                        # Extract post ID from URL
-                        match = re.search(r'/thread/(\d+)', href)
-                        if match:
-                            post_id = match.group(1)
-                            full_url = f"https://robertsspaceindustries.com{href}" if href.startswith("/") else href
-
-                            posts.append(PatchPost(
-                                post_id=post_id,
-                                title=title,
-                                url=full_url
-                            ))
-            else:
-                for thread in threads[:10]:  # Limit to first 10
-                    try:
-                        # Try to find the link within the thread item
-                        link = thread.query_selector("a[href*='/thread/']")
-                        if not link:
-                            link = thread if thread.get_attribute("href") else None
-
-                        if link:
-                            href = link.get_attribute("href")
-                            title = link.inner_text().strip()
-
-                            if href:
-                                match = re.search(r'/thread/(\d+)', href)
-                                if match:
-                                    post_id = match.group(1)
-                                    full_url = f"https://robertsspaceindustries.com{href}" if href.startswith("/") else href
-
-                                    posts.append(PatchPost(
-                                        post_id=post_id,
-                                        title=title or f"Post {post_id}",
-                                        url=full_url
-                                    ))
-                    except Exception as e:
-                        logger.warning(f"Error parsing thread: {e}")
+                    # Skip if we've already seen this thread
+                    if post_slug in seen_ids:
                         continue
+                    seen_ids.add(post_slug)
+
+                    full_url = f"https://robertsspaceindustries.com{href}" if href.startswith("/") else href
+
+                    posts.append(PatchPost(
+                        post_id=post_slug,
+                        title=title,
+                        url=full_url
+                    ))
+
+                    # Limit to first 10 unique posts
+                    if len(posts) >= 10:
+                        break
 
         except PlaywrightTimeout:
             logger.error("Timeout waiting for forum page to load")
@@ -115,7 +90,7 @@ def scrape_forum_threads() -> list[PatchPost]:
         finally:
             browser.close()
 
-    logger.info(f"Found {len(posts)} posts")
+    logger.info(f"Found {len(posts)} unique posts")
     return posts
 
 
@@ -124,7 +99,10 @@ def scrape_post_content(post: PatchPost) -> str:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+            locale="en-US",
+            timezone_id="America/New_York"
         )
         page = context.new_page()
 
@@ -132,32 +110,37 @@ def scrape_post_content(post: PatchPost) -> str:
             logger.info(f"Loading post: {post.url}")
             page.goto(post.url, wait_until="networkidle", timeout=60000)
 
-            # Wait for content to load
-            page.wait_for_selector(".content-main, .thread-content, [class*='content']", timeout=30000)
-            page.wait_for_timeout(2000)
+            # Wait longer for JavaScript to fully render
+            page.wait_for_timeout(8000)
 
-            # Try multiple selectors for post content
+            # Try multiple selectors for post content (ordered by specificity)
             content_selectors = [
-                ".thread-content .content-main",
-                ".message-content",
-                ".post-content",
-                "[class*='ThreadContent']",
+                "[class*='rich-text']",
+                "[class*='RichText']",
+                "[class*='thread-body']",
+                "[class*='message-body']",
+                "[class*='post-body']",
                 ".content-main",
-                "article"
+                "article",
             ]
 
             content = ""
             for selector in content_selectors:
                 elements = page.query_selector_all(selector)
                 if elements:
-                    # Get text from first main content element
-                    content = elements[0].inner_text()
-                    if len(content) > 100:  # Ensure we got meaningful content
-                        logger.info(f"Found content using selector: {selector}")
+                    # Get text from first substantial content element
+                    for el in elements:
+                        text = el.inner_text()
+                        if len(text) > 200:  # Ensure meaningful content
+                            content = text
+                            logger.info(f"Found content using selector: {selector} ({len(content)} chars)")
+                            break
+                    if content:
                         break
 
-            if not content:
+            if not content or len(content) < 200:
                 # Fallback: get all text from the page body
+                logger.info("Using body fallback for content")
                 content = page.inner_text("body")
 
             # Clean up content - limit to first 8000 chars for LLM processing

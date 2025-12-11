@@ -3,39 +3,34 @@ services:
     build: .
     container_name: versepulse
     restart: unless-stopped
-    depends_on:
-      - ollama
     environment:
       - PUSHBULLET_API_KEY=${PUSHBULLET_API_KEY}
-      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://localhost:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-mistral}
       - CHECK_INTERVAL=${CHECK_INTERVAL:-10}
       - FORUM_URL=${FORUM_URL:-https://robertsspaceindustries.com/spectrum/community/SC/forum/190048}
     volumes:
       - ./data:/app/data
-    networks:
-      - versepulse-net
+    # Use host network to access external Ollama server
+    network_mode: host
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: versepulse-ollama
-    restart: unless-stopped
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - versepulse-net
-    # Uncomment below to enable GPU support (NVIDIA)
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+  # Uncomment below to run Ollama locally in Docker
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: versepulse-ollama
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   ports:
+  #     - "11434:11434"
+  #   # Uncomment below to enable GPU support (NVIDIA)
+  #   # deploy:
+  #   #   resources:
+  #   #     reservations:
+  #   #       devices:
+  #   #         - driver: nvidia
+  #   #           count: 1
+  #   #           capabilities: [gpu]
 
-volumes:
-  ollama_data:
-
-networks:
-  versepulse-net:
-    driver: bridge
+# volumes:
+#   ollama_data:
